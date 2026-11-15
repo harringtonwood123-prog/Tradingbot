@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.env
+config.yaml
+*.sqlite
+*.db
+data/*
+!data/.gitkeep
+inbox.txt

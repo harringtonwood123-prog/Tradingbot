@@ -1,0 +1,49 @@
+# Wick Fill assistant - example configuration.
+# Copy to config.yaml and edit:   cp config.example.yaml config.yaml
+# Every value below is the built-in default. Unknown keys are rejected (typo protection).
+# Educational tool. Not financial advice.
+
+risk:
+  equity: 1000.0            # PLACEHOLDER - your account size in dollars
+  risk_pct: 0.01            # PLACEHOLDER - fraction of equity risked per trade (0.01 = 1%)
+  buying_power: null        # null = same as equity. May never exceed equity (no margin).
+  max_position_value: 1000.0  # hard cap on dollars in one position
+  max_shares: 5000          # hard cap on shares in one position
+  # The four below are enforced by the paper broker/backtester from Phase 3:
+  max_trades_per_day: 3
+  max_daily_loss_pct: 0.03
+  time_exit_bars: 60        # 5-minute bars
+  flat_by_et: "16:00"
+
+strategy:
+  timeframes: ["5m", "15m", "60m", "1d", "1w"]
+  # --- what counts as a wick zone ---
+  wick_min_ratio: 0.50      # (high - close) / (high - low)
+  wick_min_pct: 0.04        # (high - close) / close
+  volume_mult: 2.0          # candle volume vs average of the previous candles
+  volume_lookback: 20
+  volume_min_prior: 5
+  intraday_expiry_days: 3   # calendar days, for 5m / 15m / 60m zones
+  htf_expiry_days: 120      # calendar days, for daily / weekly zones
+  max_target_above_price: 2.0  # ignore zones whose target is > 200% above price
+  # --- state machine ---
+  reclaim_closes: 2         # 5m closes above the level to confirm a reclaim
+  retest_tolerance: 0.01    # retest = low <= level * 1.01
+  # --- signals ---
+  enable_buy_b: false       # BUY_B = fresh-reclaim entry (riskier). Off by default.
+  signal_start_et: "04:00"
+  signal_end_et: "16:00"
+  min_day_gain: 0.10
+  min_rr: 1.5
+  max_progress: 0.60        # block if price is already 60% of the way to the target
+  max_failed_attempts: 0    # block once the zone has failed more than this many times
+  min_avg_dollar_volume: 20000.0  # average dollars traded per 5m bar (last 20 bars)
+  dollar_volume_lookback: 20
+  # --- risk plan ---
+  atr_period: 14
+  atr_stop_mult: 2.0        # stop = min(level - 2 x ATR, price x 0.985)
+  pct_stop: 0.015
+  t1_fraction: 0.5          # T1 = level + 0.5 x (target - level)
+
+display:
+  local_tz: "America/Chicago"   # times are shown in US/Eastern and in this zone
