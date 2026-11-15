@@ -6,17 +6,16 @@ strategy. It runs on your laptop.
 > **Education only. Not financial advice.** Nothing here predicts or promises profit.
 > Small-cap day trading can lose money quickly. Check the news and filings before acting.
 
-## Status
+## What it does today
 
-| Phase | What | State |
+| Command | What | State |
 |---|---|---|
-| 1 | Core engine + CSV replay + unit tests | **done** |
-| 2 | Alpaca data provider, scanner, Discord alerts, inbox, status view | not built |
-| 3 | Paper broker, SQLite journal, daily report | not built |
-| 4 | Backtester, Monte Carlo, parameter sweep | not built |
-| 5 | Optional Alpaca paper-account adapter (off by default, every order confirmed) | not built |
+| `assess` | You give it tickers from your own screener. It returns a halal screen, risk flags, recent news and the wick-fill levels to wait for. | built, **not yet run against the live APIs** (see below) |
+| `replay` | Runs a CSV of bars through the strategy engine | built and tested |
+| `scan`, `watch`, `paper`, `report`, `backtest` | Alerts, paper trading, backtesting | not built |
 
-There is **no order placement of any kind** in the code yet.
+There is **no order placement of any kind** in the code. It does not send alerts or signals;
+it answers when you ask.
 
 ## Setup (macOS)
 
@@ -31,7 +30,92 @@ pip install -e ".[dev]"
 
 Each time you open a new Terminal window, run `source .venv/bin/activate` again first.
 
-## Phase 1: how to run it
+## Assess tickers
+
+**1. Add your keys (once)**
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in a text editor and fill in:
+
+- `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY`: from your Alpaca dashboard (paper keys are fine).
+- `SEC_USER_AGENT`: your name and email. The SEC requires this from automated tools.
+
+`.env` is ignored by git. Never paste it into a chat.
+
+**2. Run it**
+
+```bash
+python -m wickfill assess OMH MERC PLCE
+```
+
+Or keep tickers in a file (one per line) and save the report:
+
+```bash
+python -m wickfill assess --file inbox.txt --out report.txt
+```
+
+Add `--catalyst-ok` only after you have read the news and filings yourself.
+
+**3. What you get for each ticker**
+
+- **READOUT**: one line. `BUY SETUP PRESENT`, `WAIT` (with the exact level and what must
+  happen there), `NO SETUP`, `AVOID (fails halal screen)` or `NO DATA`.
+- **HALAL SCREEN**: PASS / FAIL / DOUBTFUL / UNKNOWN, with defense, gambling and alcohol
+  called out by name, plus the debt, cash and interest-income ratios.
+- **RISK FLAGS**: offering and shelf filings, delisting notices, reverse-split signs,
+  sub-$1 price, extreme range, thin trading, no-news moves.
+- **LEVELS**: every unfilled wick zone above price (timeframe, level, target, state), the
+  stop, T1, target, R:R and share size, and exit levels if you already hold it.
+- **NEWS**: recent headlines with links, tagged dilution / reverse split / catalyst.
+
+**Not yet proven:** the environment this was built in could not reach Alpaca or the SEC,
+so `assess` has only been tested against simulated responses. The first real run is on
+your laptop. If a request fails, the report says which part is unavailable rather than
+guessing; send me the message and I will fix it.
+
+### How the halal screen works, and its limits
+
+It is an automated first pass, **not a religious ruling**.
+
+- **Business activity**: the company's SEC industry code (SIC) and its name are checked
+  for alcohol, tobacco, gambling, weapons and defense, conventional banking and insurance,
+  pork, cannabis and adult content. Clear cases FAIL. Mixed industries (aerospace, hotels,
+  restaurants, grocery, media, generic "gaming") are DOUBTFUL.
+- **Financial ratios** (AAOIFI-style, from the company's own SEC filings): interest-bearing
+  debt / market cap <= 30%, cash and interest-bearing securities / market cap <= 30%,
+  interest income / revenue <= 5%. Thresholds are in `config.yaml` under `halal`.
+- **What it cannot see**: revenue by business line. A company with a small haram segment
+  can pass, and a defense contractor filed under a neutral code can be missed.
+- **Often UNKNOWN for small caps**: foreign companies that report in another currency,
+  and companies with no revenue, cannot be fully checked. UNKNOWN means not verified.
+- Market cap uses the last reported share count, which is often stale for diluting
+  small caps. Debt is the sum of tagged debt items and excludes leases.
+- Screening providers and scholars use different thresholds and can disagree. Confirm
+  with a certified screener or a scholar you trust.
+
+### Other limits
+
+- **Halts are not detected.** Check your broker.
+- **Float and short interest** are not available from these sources.
+- **IEX feed** (Alpaca free plan) sees one exchange only. Highs, lows and volume are
+  incomplete, so wick levels and volume rules can be wrong. Set `data.feed: "sip"` if you
+  have the paid plan.
+- Wick history: daily and weekly zones come from about 400 days of daily bars; intraday
+  zones from the last one to two weeks of 5-minute bars.
+
+### Where the rules come from
+
+The strategy is the "wick fill" idea Mini_Tradez posts about: a candle that closes far
+below its high leaves a wick; if price breaks and reclaims that candle's close, the wick
+high becomes the target. His X, YouTube and Whop pages could not be opened from the build
+environment, so the exact rules here come from your written spec and your log of his
+calls, not from his videos. In that log, 3 of the 7 calls with a checkable target reached
+it, and several names fell 40-80% the same day.
+
+## Replay and tests
 
 **1. Run the tests**
 
@@ -39,7 +123,7 @@ Each time you open a new Terminal window, run `source .venv/bin/activate` again 
 pytest -q
 ```
 
-Expect `44 passed`. That means the wick detector, state machine, signal checks, risk maths
+Expect `62 passed`. That means the wick detector, state machine, signal checks, risk maths
 and data handling all behave as specified.
 
 **2. Make a synthetic sample file and replay it**
@@ -83,6 +167,10 @@ which phase they arrive in.
 ```
 wickfill/
   engine.py    THE strategy: wick detector, zones, state machine, signals, risk plan
+  assess.py    per-ticker assessment and report
+  halal.py     business-activity and financial-ratio screen
+  providers/   alpaca.py (bars, news), edgar.py (SEC filings and financials)
+  http.py      small HTTPS helper
   bars.py      CSV loading, UTC conversion, resampling, data-quality warnings
   replay.py    feeds bars through the engine; status box
   config.py    typed settings + YAML loader
@@ -109,7 +197,7 @@ Please read these. Each is a place where the spec could be read more than one wa
    Friday. On a half day the daily candle closes when the next bar arrives.
 4. **History needed.** A candle only qualifies with at least 5 earlier candles of the same
    timeframe for the volume average. From 5m data alone that means 5 prior days for daily
-   zones and 5 prior weeks for weekly zones. Phase 2 loads daily/weekly history from the
+   zones and 5 prior weeks for weekly zones. `assess` loads daily/weekly history from the
    data provider (`SymbolEngine.seed_candles`).
 5. **Partial candles are skipped.** If the data starts mid-hour, that first 60m candle is
    ignored rather than treated as a real candle.
@@ -148,22 +236,16 @@ Please read these. Each is a place where the spec could be read more than one wa
   Use unadjusted intraday data and treat any zone that spans a split as invalid. Replay
   warns when price jumps 2x or more between consecutive bars.
 
-## Data provider: what you must check (Phase 2)
+## Data sources: what you must check
 
-You chose **Alpaca**. I cannot verify these for your account, so please confirm them:
+Only official APIs are used. Nothing is scraped. I cannot verify these for your account:
 
-- You have API keys for your **paper** account (`https://paper-api.alpaca.markets`).
-  Keys will live in a `.env` file that is never committed or logged.
-- **Which market-data plan you have.** The free plan gives real-time data from the IEX
-  exchange only, which is a small share of small-cap volume and thin in pre-market, and
-  it limits recent consolidated (SIP) data. Volume-based rules (2x volume, relative
-  volume, dollar volume) will be distorted on IEX-only data. The paid plan gives full
-  consolidated data. The bot will label the feed in every alert.
-- Alpaca's terms for market-data use and display, and its API rate limits.
-- Alpaca has no float data and its screener is limited, so float filters need another
-  permitted source or stay manual.
+- **Alpaca**: which market-data plan you have (free = IEX only), that your keys allow the
+  news endpoint, and Alpaca's terms for data use and rate limits.
+- **SEC EDGAR**: free and public; requires the identifying User-Agent and at most 10
+  requests per second (the tool makes 3 per ticker).
 
 ## Safety
 
-Paper mode only. No broker connection exists yet. When one is added it will require a
+Read-only. The Alpaca module only downloads bars and news; no broker connection exists. When one is added it will require a
 config flag, an environment variable and a typed confirmation for every single order.

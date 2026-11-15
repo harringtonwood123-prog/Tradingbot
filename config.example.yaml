@@ -45,5 +45,19 @@ strategy:
   pct_stop: 0.015
   t1_fraction: 0.5          # T1 = level + 0.5 x (target - level)
 
+data:
+  feed: "iex"               # "iex" = Alpaca free plan (one exchange, thin for small caps); "sip" = paid, all exchanges
+  alpaca_data_url: "https://data.alpaca.markets"
+  daily_history_days: 400   # history loaded for daily / weekly wick zones
+  news_days: 7              # how far back to pull headlines
+  filings_days: 180         # how far back to scan SEC filings for risk flags
+  stale_after_minutes: 20   # in market hours, data older than this is called stale
+
+halal:
+  # AAOIFI-style thresholds. Providers and scholars differ; change these to match the standard you follow.
+  max_debt_ratio: 0.30            # interest-bearing debt / market cap
+  max_cash_ratio: 0.30            # cash + interest-bearing securities / market cap
+  max_impermissible_income: 0.05  # interest income / revenue
+
 display:
   local_tz: "America/Chicago"   # times are shown in US/Eastern and in this zone

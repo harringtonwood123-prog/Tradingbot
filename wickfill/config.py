@@ -60,6 +60,23 @@ class RiskConfig:
 
 
 @dataclass
+class DataConfig:
+    feed: str = "iex"  # "iex" (free plan, one exchange only) or "sip" (paid, all exchanges)
+    alpaca_data_url: str = "https://data.alpaca.markets"
+    daily_history_days: int = 400  # for daily/weekly wick zones
+    news_days: int = 7
+    filings_days: int = 180
+    stale_after_minutes: int = 20  # during market hours, older data is called stale
+
+
+@dataclass
+class HalalConfig:
+    max_debt_ratio: float = 0.30  # interest-bearing debt / market cap
+    max_cash_ratio: float = 0.30  # cash + interest-bearing securities / market cap
+    max_impermissible_income: float = 0.05  # interest income / revenue
+
+
+@dataclass
 class DisplayConfig:
     local_tz: str = "America/Chicago"
 
@@ -68,6 +85,8 @@ class DisplayConfig:
 class Config:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    halal: HalalConfig = field(default_factory=HalalConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
 
@@ -103,6 +122,8 @@ def validate(cfg: Config) -> None:
     bad = set(cfg.strategy.timeframes) - allowed
     if bad:
         raise ValueError(f"Unsupported timeframes: {sorted(bad)}")
+    if cfg.data.feed not in ("iex", "sip"):
+        raise ValueError("data.feed must be 'iex' or 'sip'")
     if not 0 < cfg.risk.risk_pct <= 0.05:
         raise ValueError("risk.risk_pct must be between 0 and 0.05 (5%)")
     if cfg.risk.equity <= 0:

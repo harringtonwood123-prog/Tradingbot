@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+import os
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 
 from . import __version__
 from .bars import detect_interval_minutes, drop_forming, load_csv, quality_notes, resample
@@ -19,6 +21,66 @@ DISCLAIMER = (
     "Check the news and filings before acting."
 )
 _LATER = {"scan": 2, "watch": 2, "paper": 3, "report": 3, "backtest": 4}
+
+
+def load_env(path: str = ".env") -> None:
+    """Read KEY=VALUE lines from .env into the environment (existing values win)."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _read_tickers(args: argparse.Namespace) -> list[str]:
+    raw = list(args.tickers)
+    if args.file:
+        for line in Path(args.file).read_text().splitlines():
+            raw += line.split("#")[0].replace(",", " ").split()
+    seen: list[str] = []
+    for t in raw:
+        t = t.upper().strip().lstrip("$")
+        if t and t not in seen:
+            seen.append(t)
+    return seen
+
+
+def _cmd_assess(args: argparse.Namespace) -> int:
+    from .assess import assess_symbol, format_report
+    from .providers.alpaca import AlpacaData
+    from .providers.edgar import Edgar
+
+    cfg = load_config(args.config)
+    load_env()
+    tickers = _read_tickers(args)
+    if not tickers:
+        print("Give at least one ticker, e.g.  python -m wickfill assess OMH MERC", file=sys.stderr)
+        return 1
+    try:
+        alpaca = AlpacaData(os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", ""),
+                            feed=cfg.data.feed, base_url=cfg.data.alpaca_data_url)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    edgar = None
+    try:
+        edgar = Edgar(os.environ.get("SEC_USER_AGENT", ""))
+    except ValueError as exc:
+        print(f"WARNING: {exc}", file=sys.stderr)
+    reports = []
+    for t in tickers:
+        a = assess_symbol(t, cfg, alpaca, edgar, datetime.now(UTC), catalyst_checked=args.catalyst_ok)
+        reports.append(format_report(a, cfg))
+        print(reports[-1])
+        print()
+    if args.out:
+        Path(args.out).write_text("\n\n".join(reports) + "\n")
+        print(f"Saved to {args.out}")
+    return 0
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
@@ -87,6 +149,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tz", default="America/New_York", help="timezone of timestamps that have none")
     p.add_argument("--verbose", action="store_true", help="also print every state change")
     p.set_defaults(func=_cmd_replay)
+
+    p = sub.add_parser("assess", help="assess tickers: halal screen, risk flags, news, wick-fill levels")
+    p.add_argument("tickers", nargs="*")
+    p.add_argument("--file", help="text file of tickers (one per line or space/comma separated)")
+    p.add_argument("--config", help="path to config.yaml (defaults are used if omitted)")
+    p.add_argument("--catalyst-ok", action="store_true", help="you have already read the news and filings")
+    p.add_argument("--out", help="also save the report to this text file")
+    p.set_defaults(func=_cmd_assess)
 
     p = sub.add_parser("sample", help="write a synthetic sample CSV to try replay with")
     p.add_argument("out", nargs="?", default="data/sample_5m.csv")
