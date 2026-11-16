@@ -126,6 +126,25 @@ environment, so the exact rules here come from your written spec and your log of
 calls, not from his videos. In that log, 3 of the 7 calls with a checkable target reached
 it, and several names fell 40-80% the same day.
 
+## TradingView indicator
+
+`tradingview/wick_fill.pine` draws the same wick zones on your chart, with a status box
+(WAIT / BUY A / BUY B, level, target, stop, T1, R:R, shares, failed attempts, checklist).
+
+1. Open the file on GitHub, click **Raw**, select all and copy.
+2. In TradingView open a **5-minute** chart with **extended hours on**.
+3. Open the **Pine Editor** tab at the bottom, delete what is there, paste, click
+   **Add to chart**.
+4. Click the gear icon on the indicator to set your equity and risk, and tick
+   "I checked the news and filings" per ticker once you have.
+
+Limits: the script was written without access to TradingView's compiler, so it may need a
+fix on first paste (send me the red error line). It only finds zones inside the chart
+history TradingView has loaded, so on a 5-minute chart old daily and weekly wicks will be
+missing; check the 1-hour or daily chart for those. It has no halal screen, news or filing
+checks; use `assess` for those. Its numbers can differ slightly from `assess` because the
+data source differs.
+
 ## Replay and tests
 
 **1. Run the tests**

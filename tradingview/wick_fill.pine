@@ -1,0 +1,283 @@
+//@version=5
+// Wick Fill Zones - educational indicator. Not financial advice.
+// Use on a 5-minute chart with extended hours switched on.
+// A "wick zone" is a completed candle that closed far below its high on heavy volume:
+//   level = that candle's close, target = that candle's high.
+// The zone is "filled" when a later bar trades up to the target.
+indicator("Wick Fill Zones", shorttitle = "WickFill", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ───────── Inputs ─────────
+gZ = "Wick zone rules"
+minRatio  = input.float(0.50, "Min wick / range", step = 0.05, group = gZ)
+minPct    = input.float(4.0, "Min wick % of close", step = 0.5, group = gZ) / 100
+volMult   = input.float(2.0, "Volume vs prior average (x)", step = 0.5, group = gZ)
+volLen    = input.int(20, "Volume average length", minval = 1, group = gZ)
+volMin    = input.int(5, "Min prior candles for average", minval = 1, group = gZ)
+intraDays = input.int(3, "Intraday zones expire after (days)", minval = 1, group = gZ)
+htfDays   = input.int(120, "Daily/weekly zones expire after (days)", minval = 1, group = gZ)
+maxAbove  = input.float(200, "Ignore targets more than % above price", group = gZ) / 100
+
+gT = "Timeframes"
+useChart = input.bool(true, "Chart timeframe", group = gT)
+use15    = input.bool(true, "15 minutes", group = gT)
+use60    = input.bool(true, "60 minutes", group = gT)
+useD     = input.bool(true, "Daily", group = gT)
+useW     = input.bool(true, "Weekly", group = gT)
+
+gS = "State and signals"
+reclaimN  = input.int(2, "Closes above level to confirm reclaim", minval = 1, group = gS)
+retestTol = input.float(1.0, "Retest tolerance % above level", step = 0.25, group = gS) / 100
+enableB   = input.bool(false, "Allow BUY B (fresh reclaim, riskier)", group = gS)
+minGain   = input.float(10, "Min day gain %", group = gS) / 100
+minRR     = input.float(1.5, "Min reward:risk", step = 0.1, group = gS)
+maxProg   = input.float(60, "Max % of the way to target", group = gS) / 100
+minDollar = input.float(20000, "Min avg $ volume per bar", group = gS)
+newsOk    = input.bool(false, "I checked the news and filings for THIS ticker", group = gS)
+
+gR = "Risk plan"
+equity   = input.float(1000, "Account equity $", minval = 1, group = gR)
+riskPct  = input.float(1.0, "Risk per trade %", step = 0.25, minval = 0.05, maxval = 5, group = gR) / 100
+atrMult  = input.float(2.0, "Stop: ATR multiple below level", step = 0.5, group = gR)
+pctStop  = input.float(1.5, "Stop: at least % below price", step = 0.25, group = gR) / 100
+maxShare = input.int(5000, "Max shares", minval = 1, group = gR)
+
+gD = "Display"
+showFilled = input.bool(false, "Keep filled zones on chart (grey)", group = gD)
+showTable  = input.bool(true, "Show status box", group = gD)
+maxZones   = input.int(40, "Max zones tracked", minval = 5, maxval = 100, group = gD)
+colLevel   = input.color(color.new(color.orange, 0), "Level colour", group = gD)
+colTarget  = input.color(color.new(color.teal, 0), "Target colour", group = gD)
+
+// ───────── Wick detection (runs on whatever timeframe it is requested on) ─────────
+priorVolAvg() =>
+    n = math.min(volLen, bar_index)
+    float s = 0.0
+    if n >= volMin
+        for i = 1 to n
+            s += nz(volume[i])
+    n >= volMin ? s / n : na
+
+wickNow() =>
+    rng  = high - low
+    wick = high - close
+    avg  = priorVolAvg()
+    ok   = rng > 0 and close > 0 and wick / rng >= minRatio and wick / close >= minPct and not na(avg) and avg > 0 and volume >= volMult * avg
+    [ok, close, high, time]
+
+// Values of the most recently COMPLETED candle (no repainting).
+wickPrev() =>
+    [ok, c, h, t] = wickNow()
+    [ok[1], c[1], h[1], t[1]]
+
+[okC, cC, hC, tC] = wickNow()
+[ok15, c15, h15, t15] = request.security(syminfo.tickerid, "15", wickPrev(), lookahead = barmerge.lookahead_on)
+[ok60, c60, h60, t60] = request.security(syminfo.tickerid, "60", wickPrev(), lookahead = barmerge.lookahead_on)
+[okD, cD, hD, tD]     = request.security(syminfo.tickerid, "D", wickPrev(), lookahead = barmerge.lookahead_on)
+[okW, cW, hW, tW]     = request.security(syminfo.tickerid, "W", wickPrev(), lookahead = barmerge.lookahead_on)
+prevDayClose = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
+
+chartSec = timeframe.in_seconds()
+new15 = use15 and chartSec < 900 and not na(t15) and t15 != nz(t15[1]) and ok15
+new60 = use60 and chartSec < 3600 and not na(t60) and t60 != nz(t60[1]) and ok60
+newD  = useD and chartSec < 86400 and not na(tD) and tD != nz(tD[1]) and okD
+newW  = useW and chartSec < 604800 and not na(tW) and tW != nz(tW[1]) and okW
+
+// ───────── Zones ─────────
+// state: 0 BELOW_LEVEL, 1 RECLAIMING, 2 FRESH_RECLAIM, 3 AT_RETEST, 4 EXTENDED
+type Zone
+    string tf
+    float level
+    float target
+    int expire
+    int failed = 0
+    int closesAbove = 0
+    bool confirmed = false
+    int state = 0
+    line lvl
+    line tgt
+    label tag
+
+var zones = array.new<Zone>()
+
+dropZone(int i, bool keep) =>
+    z = array.remove(zones, i)
+    label.delete(z.tag)
+    if keep
+        line.set_extend(z.lvl, extend.none)
+        line.set_extend(z.tgt, extend.none)
+        line.set_x2(z.lvl, time)
+        line.set_x2(z.tgt, time)
+        line.set_color(z.lvl, color.new(color.gray, 50))
+        line.set_color(z.tgt, color.new(color.gray, 50))
+    else
+        line.delete(z.lvl)
+        line.delete(z.tgt)
+
+addZone(string tf, float lv, float tg, int t0, bool intraday) =>
+    z = Zone.new(tf, lv, tg, time + (intraday ? intraDays : htfDays) * 86400000)
+    z.lvl := line.new(t0, lv, time, lv, xloc = xloc.bar_time, extend = extend.right, color = colLevel, width = 2)
+    z.tgt := line.new(t0, tg, time, tg, xloc = xloc.bar_time, extend = extend.right, color = colTarget, width = 1, style = line.style_dashed)
+    z.tag := label.new(time, tg, tf + " wick  " + str.tostring(lv, format.mintick) + " -> " + str.tostring(tg, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colTarget, 80), textcolor = colTarget, size = size.small)
+    array.push(zones, z)
+    if array.size(zones) > maxZones
+        dropZone(0, false)
+
+bool newZone = false
+bool wickFilled = false
+
+if barstate.isconfirmed
+    // 1. Higher-timeframe candles that closed just before this bar.
+    if new15
+        addZone("15m", c15, h15, t15, true)
+        newZone := true
+    if new60
+        addZone("60m", c60, h60, t60, true)
+        newZone := true
+    if newD
+        addZone("D", cD, hD, tD, false)
+        newZone := true
+    if newW
+        addZone("W", cW, hW, tW, false)
+        newZone := true
+
+    // 2. Expiry and fills, then the state machine, for every zone.
+    int scanned = 0
+    if array.size(zones) > 0
+        for i = array.size(zones) - 1 to 0
+            z = array.get(zones, i)
+            scanned += 1
+            if time >= z.expire
+                dropZone(i, false)
+            else if high >= z.target
+                wickFilled := true
+                label.new(bar_index, high, z.tf + " wick filled", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(color.teal, 20), textcolor = color.white, size = size.small)
+                dropZone(i, showFilled)
+            else
+                if close <= z.level
+                    if z.confirmed
+                        z.failed += 1
+                    z.closesAbove := 0
+                    z.confirmed := false
+                    z.state := 0
+                else
+                    z.closesAbove += 1
+                    if z.closesAbove < reclaimN
+                        z.state := 1
+                    else if z.closesAbove == reclaimN
+                        z.confirmed := true
+                        z.state := 2
+                    else if low <= z.level * (1 + retestTol)
+                        z.state := 3
+                    else
+                        z.state := 4
+
+    // 3. This bar itself as a chart-timeframe wick (active from the next bar).
+    if useChart and okC
+        addZone(timeframe.period, cC, hC, tC, timeframe.isintraday)
+        newZone := true
+
+// ───────── Focus zone: nearest level to price, with the target still above price ─────────
+Zone focus = na
+float best = na
+if array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        z = array.get(zones, i)
+        if z.target > close and z.target <= close * (1 + maxAbove)
+            d = math.abs(z.level - close)
+            if na(best) or d < best
+                best := d
+                focus := z
+
+// ───────── Risk plan and rule checks ─────────
+atr = ta.atr(14)
+hasZone = not na(focus)
+float fLevel  = na
+float fTarget = na
+int   fState  = -1
+int   fFailed = 0
+int   fCloses = 0
+string fTf    = "-"
+if hasZone
+    fLevel  := focus.level
+    fTarget := focus.target
+    fState  := focus.state
+    fFailed := focus.failed
+    fCloses := focus.closesAbove
+    fTf     := focus.tf
+float stopPx  = hasZone and not na(atr) ? math.max(math.min(fLevel - atrMult * atr, close * (1 - pctStop)), 0) : na
+float t1Px    = hasZone ? fLevel + 0.5 * (fTarget - fLevel) : na
+float riskPS  = close - stopPx
+float rr      = riskPS > 0 ? (fTarget - close) / riskPS : na
+int   shares  = riskPS > 0 ? int(math.min(math.floor(equity * riskPct / riskPS), math.floor(equity / close), maxShare)) : 0
+
+etMin   = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+barMin  = chartSec / 60
+dayGain = prevDayClose > 0 ? close / prevDayClose - 1 : na
+dollarV = ta.sma(close * volume, 20)
+prog    = hasZone ? (close - fLevel) / (fTarget - fLevel) : na
+
+ckWindow = etMin >= 240 and etMin + barMin < 960 and dayofweek(time, "America/New_York") != dayofweek.saturday and dayofweek(time, "America/New_York") != dayofweek.sunday
+ckGain   = not na(dayGain) and dayGain >= minGain
+ckRR     = not na(rr) and rr >= minRR
+ckSize   = shares >= 1
+ckProg   = not na(prog) and prog < maxProg
+ckFail   = fFailed == 0
+ckDollar = not na(dollarV) and dollarV >= minDollar
+rulesOk  = ckWindow and ckGain and ckRR and ckSize and ckProg and ckFail and ckDollar
+
+setupA = hasZone and fState == 3
+setupB = hasZone and fState == 2 and enableB
+buyA = barstate.isconfirmed and setupA and rulesOk and newsOk
+buyB = barstate.isconfirmed and setupB and rulesOk and newsOk
+
+plotshape(buyA and not buyA[1], "BUY A (retest)", shape.triangleup, location.belowbar, color.new(color.green, 0), size = size.small, text = "A")
+plotshape(buyB and not buyB[1], "BUY B (fresh reclaim)", shape.triangleup, location.belowbar, color.new(color.lime, 30), size = size.tiny, text = "B")
+plot(stopPx, "Stop", color = color.new(color.red, 30), style = plot.style_linebr, linewidth = 1)
+plot(t1Px, "T1", color = color.new(color.teal, 50), style = plot.style_linebr, linewidth = 1)
+
+alertcondition(buyA and not buyA[1], "BUY A (retest)", "{{ticker}} Wick Fill BUY A at {{close}}. Check the news and filings before acting.")
+alertcondition(buyB and not buyB[1], "BUY B (fresh reclaim)", "{{ticker}} Wick Fill BUY B at {{close}}. Check the news and filings before acting.")
+alertcondition(wickFilled, "Wick filled", "{{ticker}} wick filled at {{high}}.")
+alertcondition(newZone, "New wick zone", "{{ticker}} new wick zone.")
+
+// ───────── Status box ─────────
+stateName(int s) =>
+    s == 0 ? "BELOW LEVEL" : s == 1 ? "RECLAIMING" : s == 2 ? "FRESH RECLAIM" : s == 3 ? "AT RETEST" : s == 4 ? "EXTENDED" : "NO ZONE"
+
+tick(bool b) =>
+    b ? "✓ " : "✗ "
+
+var table box = table.new(position.top_right, 2, 18, bgcolor = color.new(color.black, 15), border_width = 1, border_color = color.new(color.gray, 60))
+
+row(int r, string k, string v, color c) =>
+    table.cell(box, 0, r, k, text_color = color.silver, text_halign = text.align_left, text_size = size.small)
+    table.cell(box, 1, r, v, text_color = c, text_halign = text.align_left, text_size = size.small)
+
+if barstate.islast
+    // keep zone labels at the right edge
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            zl = array.get(zones, i)
+            label.set_x(zl.tag, time)
+    if showTable
+        ready  = (setupA or setupB) and rulesOk
+        action = ready and newsOk ? (setupA ? "BUY A" : "BUY B") : ready ? "SETUP - tick news check" : "WAIT"
+        aCol   = ready and newsOk ? color.lime : ready ? color.yellow : color.orange
+        row(0, "Wick Fill", action, aCol)
+        row(1, "State", stateName(fState) + (fState == 1 ? " " + str.tostring(fCloses) + "/" + str.tostring(reclaimN) : ""), color.white)
+        row(2, "Zone", fTf, color.white)
+        row(3, "Level", hasZone ? str.tostring(fLevel, format.mintick) : "-", colLevel)
+        row(4, "Target", hasZone ? str.tostring(fTarget, format.mintick) : "-", colTarget)
+        row(5, "Stop", na(stopPx) ? "-" : str.tostring(stopPx, format.mintick), color.red)
+        row(6, "T1", na(t1Px) ? "-" : str.tostring(t1Px, format.mintick), color.white)
+        row(7, "R:R", na(rr) ? "-" : str.tostring(rr, "#.##"), color.white)
+        row(8, "Shares", hasZone ? str.tostring(shares) : "-", color.white)
+        row(9, "Failed", str.tostring(fFailed), fFailed > 0 ? color.red : color.white)
+        row(10, "Day gain", na(dayGain) ? "-" : str.tostring(dayGain * 100, "#.#") + "%", color.white)
+        row(11, tick(ckWindow) + "Window", "04:00-16:00 ET", ckWindow ? color.lime : color.red)
+        row(12, tick(ckGain) + "Day gain", ">= " + str.tostring(minGain * 100) + "%", ckGain ? color.lime : color.red)
+        row(13, tick(ckRR) + "R:R", ">= " + str.tostring(minRR), ckRR ? color.lime : color.red)
+        row(14, tick(ckProg) + "Not extended", "< " + str.tostring(maxProg * 100) + "% to target", ckProg ? color.lime : color.red)
+        row(15, tick(ckFail) + "Zone not failed", "", ckFail ? color.lime : color.red)
+        row(16, tick(ckDollar) + "$ volume", na(dollarV) ? "-" : "$" + str.tostring(dollarV, "#,###") + "/bar", ckDollar ? color.lime : color.red)
+        row(17, tick(newsOk) + "News checked", "manual", newsOk ? color.lime : color.red)
