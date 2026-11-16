@@ -41,6 +41,10 @@ def _read_tickers(args: argparse.Namespace) -> list[str]:
     if args.file:
         for line in Path(args.file).read_text().splitlines():
             raw += line.split("#")[0].replace(",", " ").split()
+    return _clean_tickers(raw)
+
+
+def _clean_tickers(raw: list[str]) -> list[str]:
     seen: list[str] = []
     for t in raw:
         t = t.upper().strip().lstrip("$")
@@ -54,12 +58,9 @@ def _cmd_assess(args: argparse.Namespace) -> int:
     from .providers.alpaca import AlpacaData
     from .providers.edgar import Edgar
 
-    cfg = load_config(args.config)
+    config_path = args.config or ("config.yaml" if Path("config.yaml").exists() else None)
+    cfg = load_config(config_path)
     load_env()
-    tickers = _read_tickers(args)
-    if not tickers:
-        print("Give at least one ticker, e.g.  python -m wickfill assess OMH MERC", file=sys.stderr)
-        return 1
     try:
         alpaca = AlpacaData(os.environ.get("ALPACA_API_KEY_ID", ""), os.environ.get("ALPACA_API_SECRET_KEY", ""),
                             feed=cfg.data.feed, base_url=cfg.data.alpaca_data_url)
@@ -71,13 +72,33 @@ def _cmd_assess(args: argparse.Namespace) -> int:
         edgar = Edgar(os.environ.get("SEC_USER_AGENT", ""))
     except ValueError as exc:
         print(f"WARNING: {exc}", file=sys.stderr)
-    reports = []
-    for t in tickers:
-        a = assess_symbol(t, cfg, alpaca, edgar, datetime.now(UTC), catalyst_checked=args.catalyst_ok)
-        reports.append(format_report(a, cfg))
-        print(reports[-1])
-        print()
-    if args.out:
+    reports: list[str] = []
+
+    def run(tickers: list[str]) -> None:
+        for t in tickers:
+            a = assess_symbol(t, cfg, alpaca, edgar, datetime.now(UTC), catalyst_checked=args.catalyst_ok)
+            reports.append(format_report(a, cfg))
+            print(reports[-1])
+            print()
+
+    tickers = _read_tickers(args)
+    if tickers:
+        run(tickers)
+    else:
+        # Interactive: type tickers, get an assessment, repeat.
+        print("Wick Fill assessor. " + DISCLAIMER)
+        print(f"Settings: {config_path or 'built-in defaults'}   feed: {cfg.data.feed.upper()}")
+        print("Type one or more tickers and press Enter (for example: OMH MERC). Type q to quit.")
+        while True:
+            try:
+                line = input("\ntickers> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if line.strip().lower() in ("q", "quit", "exit"):
+                break
+            run(_clean_tickers(line.replace(",", " ").split()))
+    if args.out and reports:
         Path(args.out).write_text("\n\n".join(reports) + "\n")
         print(f"Saved to {args.out}")
     return 0
@@ -138,7 +159,7 @@ def _cmd_sample(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wickfill", description="Wick Fill assistant. " + DISCLAIMER)
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("replay", help="run a CSV of 1m/5m bars through the strategy engine")
     p.add_argument("csv")
@@ -167,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         p.set_defaults(func=lambda a, n=name, ph=phase: (print(f"'{n}' is not built yet; it arrives in Phase {ph}."), 2)[1])
 
     args = parser.parse_args(argv)
+    if args.command is None:  # no command: open the interactive assessor
+        args = parser.parse_args(["assess"])
     return args.func(args)
 
 

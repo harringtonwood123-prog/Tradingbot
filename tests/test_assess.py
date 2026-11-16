@@ -259,3 +259,24 @@ def test_load_env(tmp_path, monkeypatch):
     load_env(str(p))
     import os
     assert os.environ["SEC_USER_AGENT"] == "Jane Doe jane@example.com"
+
+
+def test_interactive_mode_assesses_typed_tickers(tmp_path, monkeypatch, capsys):
+    import wickfill.providers.alpaca as alp
+    import wickfill.providers.edgar as edg
+    calls = []
+    fetch = _fake_fetch(calls)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "KEYID")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "SECRET")
+    monkeypatch.setenv("SEC_USER_AGENT", "Test User test@example.com")
+    monkeypatch.setattr(alp, "get_json", fetch)
+    monkeypatch.setattr(edg, "get_json", fetch)
+    monkeypatch.setattr(alp.AlpacaData.__init__, "__defaults__", ("iex", "https://data.alpaca.markets", fetch))
+    monkeypatch.setattr(edg.Edgar.__init__, "__defaults__", ("data/cache", fetch))
+    typed = iter(["$wdgt, wdgt", "", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(typed))
+    assert main([]) == 0  # no command at all opens the assessor
+    out = capsys.readouterr().out
+    assert out.count("HALAL SCREEN") == 1 and "WDGT  Widget Software Inc" in out and "Type q to quit" in out
+    assert "SECRET" not in out

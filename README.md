@@ -47,6 +47,17 @@ Open `.env` in a text editor and fill in:
 
 **2. Run it**
 
+The simplest way: start it, then type tickers whenever you want one assessed.
+
+```bash
+python -m wickfill
+```
+
+At the `tickers>` prompt type one or more symbols (for example `OMH MERC`) and press
+Enter. Type `q` to quit. It uses `config.yaml` automatically if that file exists.
+
+Or pass the tickers on the command line:
+
 ```bash
 python -m wickfill assess OMH MERC PLCE
 ```
@@ -123,7 +134,7 @@ it, and several names fell 40-80% the same day.
 pytest -q
 ```
 
-Expect `62 passed`. That means the wick detector, state machine, signal checks, risk maths
+Expect `63 passed`. That means the wick detector, state machine, signal checks, risk maths
 and data handling all behave as specified.
 
 **2. Make a synthetic sample file and replay it**
